@@ -13,14 +13,42 @@ I think it could be rewritten in POSIX shell in the future which is a goal of mi
 - If the bump/image limit has been reached or the thread is archived then a status message will appear.
 - Parallel downloading for faster downloads.
 
+#### Nix
+
+For example, to open a shell in which `4dl` is made available in `$PATH`:
+
+```
+nix shell github:numpadd/4dl
+```
+
+Or to run the script directly:
+
+```
+nix run github:numpadd/4dl https://boards.4channel.org/board/threadnumber ~/Pictures/directory
+```
+
+Or to quickly install this program in a per-user profile:
+
+```
+nix profile install github:numpadd/4dl
+```
+
 ![image](screenshot.png)
 
-# Dependencies
+# Dependencies*
 
+- awk
 - bash obviously
 - coreutils
 - curl
 - dateutils
+- fd
+- findutils
+- grep
 - jq
+- ncurses
+- recode
+- util-linux
 - wget
-- xargs
+
+<p style="font-size:5px">*most of these are dependencies due to the sheer laziness of myself :)</p>
