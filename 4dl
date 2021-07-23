@@ -1,0 +1,169 @@
+#!/usr/bin/env bash
+
+#
+# the "new" 4chan image downloader
+#
+
+# fail if part of pipe has an error
+set -o pipefail
+
+# if no args then exit
+[[ $# == 0 ]] && exit
+
+# COLOURS
+bold="\033[1m"
+off="\033[0m"
+
+subject_colour="\033[1;35m"
+header_colour="\033[1;34m"
+status_colour="\033[1;31m"
+err_col="\033[1;38;5;196m"
+stats="\033[0;90m"
+
+msg_col="\033[1;32m"
+err_col="\033[1;38;5;196m"
+
+dl_before=0
+DL_THREAD_LIST=$HOME/.config/4dl/dl_threads.csv
+[[ ! -a "$DL_THREAD_LIST" ]] && mkdir $HOME/.config/4dl 2>/dev/null && touch $DL_THREAD_LIST
+
+msg(){ printf "${msg_col}==>${off} ${bold}%s${off}\n" "$@"; }
+err(){ printf "${err_col}==>${off} ${bold}%s${off}\n" "$@"; }
+
+prompt(){
+    while true; do
+        read -p "$1 [y/n] " yn
+        case "$yn" in
+            [Yy]*) return 0  ;;
+            [Nn]*) garbage_disposal ;;
+        esac
+    done
+}
+
+garbage_disposal(){
+    err "Aborted."
+    rm "${thread_info}" 2>/dev/null
+    exit
+}
+
+wrap(){
+    case "$1" in
+        off) tput rmam ;; # Turn off line wrapping
+        on) tput smam ;; # Turn on line wrapping
+    esac
+}
+
+trap garbage_disposal INT
+
+thread=$1
+dir=$2
+
+dir=$(realpath -mq "${dir}" 2>/dev/null)
+
+[[ -z "${dir}" ]] && dir="$(pwd)"
+dir_fancy=$(echo "${dir}" | sed "s|/| / |g;s|^ / ||g")
+
+msg "Downloading thread data..."
+board=$(awk -F'/' '{print $4}' <<< "${thread}")
+thread_no=$(awk -F'/' '{print $6}' <<< "${thread}")
+thread_api_link="https://a.4cdn.org/${board}/thread/${thread_no}.json"
+
+prev_dl=$(grep "$board,$thread_no" "$DL_THREAD_LIST" 2>/dev/null)
+
+if [[ "$prev_dl" ]]; then
+    prompt "You've downloaded this thread before. Download anything new?"
+else
+    echo "$board,$thread_no" >> "$DL_THREAD_LIST"
+fi
+
+[[ "${board}" == "f" ]] && err "/f/ is not supported."
+
+thread_info=$(mktemp 4dl-XXXXXX.tmp)
+
+curl -s "${thread_api_link}" >> ${thread_info}
+
+# Poster Name
+op_name=$(jq -r '.posts[0].name' "${thread_info}" | sed "s/,//g")
+
+# Post Subject
+op_sub=$(jq -r '.posts[0].sub' "${thread_info}" | sed "s/,//g;s/\&amp\;/\&/g")
+
+# Post Comment
+op_com=$(jq -r '.posts[0].com' "${thread_info}" | sed -r "s|<br>| |g;s/<[^>]*>//g;s/\s+/ /g;s/\+//g" | recode html)
+
+# Date + Human readable date
+op_unix=$(jq -r '.posts[0].time' "${thread_info}")
+op_time=$(date -d @${op_unix} +'%a %d %b %Y %R')
+op_since=$(dateconv ${op_unix} -i "%s"); op_since=$(datediff ${op_since} now -f "(%Y years, %m months, %w weeks, %d days, %H hours, %M mins ago)" | sed -r "s/\b0\s\w+,\s//g;s/,.*/ ago\)/")
+
+# Replies/Images/IPs
+op_replies=$(jq -r '.posts[0].replies' ${thread_info}); op_replies=$(( op_replies + 1 ))
+op_images=$(jq -r '.posts[0].images' ${thread_info}); op_images=$(( op_images + 1 ))
+op_ips=$(jq -r '.posts[0].unique_ips' ${thread_info})
+op_bump_limit=$(jq -r '.posts[0].bumplimit' ${thread_info})
+op_image_limit=$(jq -r '.posts[0].imagelimit' ${thread_info})
+op_archived=$(jq -r '.posts[0].archived' ${thread_info})
+
+# Thread status message if applicable
+[[ "${op_bump_limit}" == 1 ]] && op_replies="${status_colour}${op_replies}${off}" && op_limit_msg="${status_colour}(Bump Limit Reached)${off}" # Bump Limit
+[[ "${op_image_limit}" == 1 ]] && op_images="${status_colour}${op_images}${off}" && op_limit_msg="${status_colour}(Image Limit Reached)${off}" # Image Limit
+[[ "${op_bump_limit}" == 1 && "${op_image_limit}" == 1 ]] && op_limit_msg="${status_colour}(Bump & Image Limit Reached)${off}"                 # Bump and Image Limit
+[[ "${op_archived}" == 1 ]] && op_limit_msg="${status_colour}(Archived)${off}"                                                                 # Archived
+[[ "${op_ips}" == "null" ]] && op_ips="?"                                                                                                      # When a thread is archived, the Unique IP's don't show up so here we set it to "?"
+
+# Image stats
+op_ft=$(jq -r '.posts[] | [ .ext ] | @sh' ${thread_info} | sed "/null/d;s/'//g;s/\.//g" | sort | uniq -c \
+    | awk '{print $1, $2}' | sort -nr | tr "\n" "," | sed "s/+$//g;s/,/, /g;s/,\s$//g")
+
+# Dir stats
+dir_ft=$(fd -t f -d 1 . "${dir}" 2>/dev/null | grep -Ei "\.[a-z]+$" | sort | sed "s/.*\.//" | sort | tr "[:upper:]" "[:lower:]" \
+    | uniq -c | sort -nr | awk '{print $1, $2}' | tr "\n" "," | sed "s/+$//g;s/,$//g")
+[[ -z "$dir_ft" ]] && dir_ft="none"
+
+# Eventual output once everything is calculated
+wrap off
+printf "
+${header_colour}Board${off}+/${board}/ ${board_title}
+${header_colour}Poster Name${off}+${bold}${op_name}${off}
+${header_colour}Subject${off}+${subject_colour}${op_sub}${off}
+${header_colour}Comment${off}+${op_com}
+${header_colour}Post Date${off}+${op_time} ${stats}${op_since}${off}
+${header_colour}Replies/Images/IP's${off}+${op_replies} / ${op_images} / ${op_ips} ${stats}(${op_ft})${off} ${op_limit_msg}
+${header_colour}Target Directory${off}+${dir_fancy} ${stats}(${dir_ft})${off}
+" | column -s "+" -t -o " │ " --table-right 1 | sed "/null/d"
+wrap on
+
+prompt "Is this good?"
+
+# If the specified directory does not exist then create it and display a message
+[[ ! -d "${dir}" ]] && mkdir -p "${dir}" && msg "Created directory: ${2}/"
+
+# Gets a list of the image timestamps and extensions from the cached thread data
+image_list=$(jq -r '.posts[] | [ .tim, .ext ] | @sh' ${thread_info} \
+    | xargs printf "https://i.4cdn.org/${board}/%s%s\n" \
+    | sed "/null/d")
+
+# File count before downloading
+fcount_before=$(fd -d 1 -t f . "${dir}" | wc -l)
+
+# Download start time. Used to calcuate the time that the download has taken to finish
+dl_start_time=$(dateconv $(date +'%s') -i "%s")
+
+msg "Downloading files..."
+xargs -n 1 -P 10 wget -i - -q -P "${dir}" -nc <<< "${image_list}"
+
+# Download end time
+dl_end_time=$(dateconv $(date +'%s') -i "%s")
+
+# The calculated time since the start and the end of the download in a human readable format
+time_diff=$(datediff $dl_start_time $dl_end_time -f "%H hrs %M mins %S secs" | sed -r "s/0\s\w+\s//g")
+
+# File count after downloading
+fcount_after=$(fd -d 1 -t f . "${dir}" | wc -l)
+
+# The calculated change in the amount of files in a directory. Used for the "Downloaded `n` files in `n` secs" message
+total_downloaded=$(( fcount_after - fcount_before ))
+[[ "${total_downloaded}" == 0 ]] && msg "Nothing downloaded! You probably downloaded everything." || msg "Downloaded ${total_downloaded} files in ${time_diff}."
+
+# end of program
+rm ${thread_info}
